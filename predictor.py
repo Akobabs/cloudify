@@ -40,7 +40,7 @@ class Predictor:
             results.append({'Model': NAMES[kind], 'Outcome': 'FLAGGED' if score > model.threshold else 'NOT FLAGGED', 'Score': score, 'Threshold': float(model.threshold), 'Failure probability': score if kind == 'random_forest' and self.dataset == 'google' else None})
         return results
 
-    def predict_sequence(self, frame):
+    def validate_sequence(self, frame):
         columns = self.preprocessor['raw_features']
         if not set(columns).issubset(frame.columns):
             raise ValueError('CSV must contain metric_01 through metric_38, matching the supplied template.')
@@ -49,6 +49,10 @@ class Predictor:
         numeric = frame[columns].apply(pd.to_numeric, errors='raise')
         if not np.isfinite(numeric.to_numpy()).all():
             raise ValueError('Hardware observations must be finite numeric values with no missing entries.')
+        return numeric
+
+    def predict_sequence(self, frame):
+        numeric = self.validate_sequence(frame)
         x = self.transform(numeric)
         results = self.score_tabular(x[-1:])
         if self.lstm is None:

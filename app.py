@@ -1,155 +1,214 @@
-from datetime import datetime
+﻿from datetime import datetime
 from zoneinfo import ZoneInfo
-import json
 from pathlib import Path
+import hashlib
+import json
+import time
 import streamlit as st
 import pandas as pd
 from predictor import Predictor
 
-st.set_page_config(page_title="Cloudify | Monitoring", page_icon="⚡", layout="wide")
+ROOT = Path(__file__).parent
+st.set_page_config(page_title='Cloudify | Monitoring', page_icon='⚡', layout='wide')
 st.markdown('''<style>
-.stApp {background:#101112;color:#f2f2e9}
-.block-container {padding-top:2.4rem;max-width:1450px}
-[data-testid="stSidebar"] {background:#17191b;border-right:1px solid #303236}
-h1 {letter-spacing:-2px;font-size:3rem!important} h3 {letter-spacing:-.5px}
-[data-testid="stMetric"] {background:#1b1d20;border:1px solid #303236;border-radius:14px;padding:20px}
-[data-testid="stMetricLabel"] {color:#a6a9af}
-[data-testid="stMetricValue"] {color:#f5d547;font-size:2rem}
-.eyebrow {color:#f5d547;font-size:12px;letter-spacing:3px;font-weight:700}
-.brand {font-size:30px;font-weight:800;letter-spacing:-1px;color:#f5d547}
-.panel {border:1px solid #3b3d31;background:#24251b;padding:24px;border-radius:14px;margin-bottom:20px}
-.muted {color:#a6a9af;font-size:14px;line-height:1.7}
-.stButton>button[kind="primary"] {color:#101112;font-weight:700;border-radius:8px}
+.stApp{background:#101112;color:#f2f2e9}.block-container{padding-top:2.4rem;max-width:1450px}
+[data-testid="stSidebar"]{background:#17191b;border-right:1px solid #303236}
+h1{letter-spacing:-2px;font-size:3rem!important}[data-testid="stMetric"]{background:#1b1d20;border:1px solid #303236;border-radius:14px;padding:18px}
+[data-testid="stMetricValue"]{color:#f5d547;font-size:2rem}.eyebrow{color:#f5d547;font-size:12px;letter-spacing:3px;font-weight:700}
+.brand{font-size:30px;font-weight:800;color:#f5d547}.panel{border:1px solid #3b3d31;background:#24251b;padding:22px;border-radius:14px;margin-bottom:16px}
+.muted{color:#a6a9af;font-size:14px;line-height:1.7}.stButton>button[kind="primary"]{color:#101112;font-weight:700}
 </style>''', unsafe_allow_html=True)
 
 @st.cache_resource
-def load_predictor(dataset="google"):
+def load_predictor(dataset='google'):
     return Predictor(dataset)
-
-with st.sidebar:
-    st.markdown('<div class="brand">⚡ cloudify</div>', unsafe_allow_html=True)
-    st.caption("CLOUD INTELLIGENCE")
-    st.divider()
-    page = st.radio("MONITORING", ["Scheduling", "Hardware"])
-    st.divider()
-    st.caption("PREDICTION ENGINE")
-    model = st.selectbox("Primary model", ["Random Forest", "LSTM Autoencoder", "One-Class SVM"])
-    st.markdown('<div class="muted">Random Forest + LSTM Autoencoder<br>One-Class SVM comparison baseline</div>', unsafe_allow_html=True)
 
 try:
     engine = load_predictor()
 except Exception as error:
-    st.error("The prediction engine could not load. Install the pinned dependencies and confirm models/ contains the exported cloud artifacts.")
+    st.error('Could not load the bundled models. Deploy using Python 3.12 and the pinned dependencies.')
     st.exception(error)
     st.stop()
 
-defaults = dict(scheduling_class=0, priority=100, collection_type=0, has_alloc=False,
-                instance_index=100, cluster=3, vertical_scaling=1.0, scheduler=0.0,
-                machine_bin=42, cycles_per_instruction=1.2, memory_accesses_per_instruction=0.008)
-saved = st.session_state.setdefault("saved_inputs", defaults.copy())
+FIELDS = {
+    'cycles_per_instruction': ('Cycles per instruction (CPI)', 10.0, .01),
+    'memory_accesses_per_instruction': ('Memory accesses per instruction', .1, .0001),
+    'average_cpu': ('Average CPU', 1.0, .001),
+    'maximum_cpu': ('Peak CPU', 1.0, .001),
+    'sample_cpu': ('Sample CPU', 1.0, .001),
+    'requested_cpu': ('Requested CPU', 1.0, .001),
+    'average_memory': ('Average memory', 1.0, .001),
+    'maximum_memory': ('Peak memory', 1.0, .001),
+    'requested_memory': ('Requested memory', 1.0, .001),
+    'assigned_memory': ('Assigned memory', 1.0, .001),
+    'page_cache_memory': ('Page cache memory', 1.0, .0001),
+}
+medians = dict(zip(engine.preprocessor['raw_features'], engine.preprocessor['imputer'].statistics_))
+defaults = {key: float(medians[key]) for key in FIELDS}
+saved = st.session_state.setdefault('hardware_inputs', defaults.copy())
+st.session_state.setdefault('history', [])
+st.session_state.setdefault('manual_revision', 0)
+
 def remember(key):
-    saved[key] = st.session_state["_" + key]
+    st.session_state['hardware_inputs'][key] = st.session_state['input_' + key]
 
-for key, value in defaults.items():
-    if (page == "Scheduling" and key not in ("cycles_per_instruction", "memory_accesses_per_instruction")) or (page == "Hardware" and key in ("cycles_per_instruction", "memory_accesses_per_instruction")):
-        st.session_state["_" + key] = saved.get(key, value)
+def reset_readings():
+    st.session_state['hardware_inputs'] = defaults.copy()
+    st.session_state['manual_revision'] += 1
+
+with st.sidebar:
+    st.markdown('<div class="brand">⚡ cloudify</div>', unsafe_allow_html=True)
+    st.caption('CLOUD INTELLIGENCE')
+    st.divider()
+    page = st.radio('MONITORING', ['Scheduling', 'Hardware'], index=1, key='navigation')
+    model = st.selectbox('Primary model', ['Random Forest', 'LSTM Autoencoder', 'One-Class SVM'])
+    st.divider()
+    st.caption('Random Forest + LSTM Autoencoder\n\nOne-Class SVM comparison baseline')
+    st.caption('Automatic inference · user-entered telemetry')
+
 st.markdown('<div class="eyebrow">WORKSPACE / MONITORING</div>', unsafe_allow_html=True)
-st.title(f"{page.lower()} intelligence.")
-st.caption("Understand your workload. Evaluate task outcomes before you make your next move.")
-st.write("")
-a,b,c = st.columns(3)
-a.metric("Engine", "Ready", "3 model algorithms", delta_color="off")
-b.metric("Scope", "2 features", "Scheduling + Hardware", delta_color="off")
-c.metric("Data mode", "Manual", "Scenario evaluation", delta_color="off")
-st.write("")
-left,right = st.columns([1.3,1], gap="large")
-with left:
-    st.subheader("Workload configuration" if page == "Scheduling" else "Hardware counters")
-    st.caption("Changes are retained as you switch between Scheduling and Hardware.")
-    if page == "Scheduling":
-        st.info("Scheduling fields describe your workload. The parent models exclude these fields from inference; hardware counters drive the prediction.")
-        x,y = st.columns(2)
-        x.selectbox("Scheduling class", [0,1,2,3], format_func=lambda v:["Best effort", "Batch", "Standard", "Latency sensitive"][v], key="_scheduling_class",on_change=remember,args=("scheduling_class",))
-        y.selectbox("Cluster", list(range(1,9)), key="_cluster",on_change=remember,args=("cluster",))
-        st.slider("Priority", 0,450,key="_priority",on_change=remember,args=("priority",))
-        x,y = st.columns(2)
-        x.selectbox("Collection type", [0,1], format_func=lambda v:"Job" if v == 0 else "Allocation set", key="_collection_type",on_change=remember,args=("collection_type",))
-        y.selectbox("Vertical scaling", [1.0,2.0,3.0], key="_vertical_scaling",on_change=remember,args=("vertical_scaling",))
-        x.number_input("Instance index", min_value=0,max_value=177107,key="_instance_index",on_change=remember,args=("instance_index",))
-        y.selectbox("Scheduler", [0.0,1.0], format_func=lambda v:"Default" if v == 0 else "Custom", key="_scheduler",on_change=remember,args=("scheduler",))
-        st.checkbox("Reserved allocation assigned",key="_has_alloc",on_change=remember,args=("has_alloc",))
-        st.slider("Machine ID bin",0,99,key="_machine_bin",on_change=remember,args=("machine_bin",),help="Machine identifier hashed into 100 bins; this is not a physical server ID.")
-    else:
-        st.markdown('<div class="panel"><b>Execution efficiency</b><div class="muted">Evaluate instruction stalls and memory intensity using the original model’s hardware counters.</div></div>',unsafe_allow_html=True)
-        st.slider("Cycles per instruction (CPI)",0.1,10.0,step=0.01,key="_cycles_per_instruction",on_change=remember,args=("cycles_per_instruction",))
-        st.caption("Higher values can indicate stalled or memory-bound execution.")
-        st.slider("Memory accesses per instruction",0.0,0.1,step=0.0001,format="%.4f",key="_memory_accesses_per_instruction",on_change=remember,args=("memory_accesses_per_instruction",))
-        st.divider()
-        st.markdown("**Sequence evaluation · all three models**")
-        st.caption("Upload 30–1000 consecutive SMD-format hardware observations. All three models evaluate the final observation, with LSTM using the last 30.")
-        sample = Path(__file__).parent / "examples/hardware-sequence.csv"
-        st.download_button("Download example CSV",sample.read_bytes(),"hardware-sequence.csv","text/csv")
-        uploaded = st.file_uploader("Hardware sequence CSV",type=["csv"])
-        sequence_run = st.button("Evaluate all three models",use_container_width=True)
-        demo_run = st.button("Try bundled hardware example",use_container_width=True)
-        if sequence_run or demo_run:
-            try:
-                if sequence_run and uploaded is None:
-                    raise ValueError("Choose a CSV file first, or try the bundled example.")
-                frame = pd.read_csv(sample if demo_run else uploaded)
-                with st.spinner("Evaluating hardware sequence…"):
-                    st.session_state["evaluation"] = load_predictor("smd").predict_sequence(frame)
-                snapshot = {key: st.session_state.get("_" + key, saved[key]) for key in defaults}
-                snapshot["priority_tier"] = next(i for i, bound in enumerate([89,115,199,359,450]) if snapshot["priority"] <= bound)
-                st.session_state["evaluated_inputs"] = snapshot
-                st.session_state["evaluation_mode"] = "SMD hardware sequence"
-                st.session_state["evaluated_at"] = datetime.now(ZoneInfo("Africa/Lagos")).strftime("%d %b %Y · %H:%M:%S WAT")
-            except Exception as error:
-                st.error(f"Sequence evaluation failed: {error}")
-    st.write("")
-    run = st.button("Evaluate manual hardware →",type="primary",use_container_width=True)
+st.title(f'{page.lower()} intelligence.')
+st.caption('Updated readings. Immediate inference. A clear record of each evaluation.')
 
-# Keep an independent copy: Streamlit removes widget keys when their page is hidden.
-visible = list(defaults)[:9] if page == "Scheduling" else list(defaults)[9:]
-for key in visible:
-    saved[key] = st.session_state["_" + key]
-values = saved.copy()
-values["has_alloc"] = int(values["has_alloc"])
-values["priority_tier"] = next(i for i, bound in enumerate([89,115,199,359,450]) if values["priority"] <= bound)
-if run:
-    try:
-        st.session_state["evaluation"] = engine.predict(values)
-        st.session_state["evaluated_inputs"] = values.copy()
-        st.session_state["evaluation_mode"] = "Google manual hardware scenario"
-        st.session_state["evaluated_at"] = datetime.now(ZoneInfo("Africa/Lagos")).strftime("%d %b %Y · %H:%M:%S WAT")
-    except Exception as error:
-        st.error(f"Evaluation failed: {error}")
-
-with right:
-    st.subheader("Prediction overview")
-    results = st.session_state.get("evaluation")
-    if not results:
-        st.markdown('<div class="panel"><div class="eyebrow">READY WHEN YOU ARE</div><h2>Your next decision,<br>in clearer focus.</h2><div class="muted">Evaluate manual hardware or open Hardware and try the bundled example to run all three models.</div></div>',unsafe_allow_html=True)
-    else:
-        if values != st.session_state["evaluated_inputs"]:
-            st.warning("Inputs changed. Evaluate again to update these results.")
-        selected = next((r for r in results if r["Model"] == model),results[0])
-        st.caption(st.session_state["evaluation_mode"])
-        if model == "LSTM Autoencoder" and len(results) == 2:
-            st.info("LSTM requires a hardware sequence. Showing Random Forest for this manual scenario.")
-        st.markdown(f'<div class="panel"><div class="eyebrow">{selected["Model"].upper()}</div><h2>{selected["Outcome"]}</h2><div class="muted">{st.session_state["evaluated_at"]}</div></div>',unsafe_allow_html=True)
-        probability = selected["Failure probability"]
-        if probability is not None:
-            st.metric("Estimated failure probability", f"{probability:.1%}")
-            st.progress(probability)
+if page == 'Scheduling':
+    st.subheader('Workload configuration')
+    st.info('Scheduling settings describe your workload. These fields are excluded from the parent models; change Hardware readings to update predictions.')
+    scheduling = st.session_state.setdefault('scheduling', {'scheduling_class':0,'priority':100,'cluster':3,'instance_index':100,'collection_type':0,'vertical_scaling':1.0,'scheduler':0.0,'has_alloc':False,'machine_bin':42})
+    def save_schedule(key):
+        scheduling[key] = st.session_state['schedule_' + key]
+    for key,value in scheduling.items():
+        st.session_state['schedule_' + key] = value
+    a,b = st.columns(2)
+    a.selectbox('Scheduling class',[0,1,2,3],format_func=lambda v:['Best effort','Batch','Standard','Latency sensitive'][v],key='schedule_scheduling_class',on_change=save_schedule,args=('scheduling_class',))
+    b.selectbox('Cluster',list(range(1,9)),key='schedule_cluster',on_change=save_schedule,args=('cluster',))
+    st.slider('Priority',0,450,key='schedule_priority',on_change=save_schedule,args=('priority',))
+    a.number_input('Instance index',min_value=0,max_value=177107,key='schedule_instance_index',on_change=save_schedule,args=('instance_index',))
+    b.selectbox('Collection type',[0,1],format_func=lambda v:'Job' if v==0 else 'Allocation set',key='schedule_collection_type',on_change=save_schedule,args=('collection_type',))
+    a.selectbox('Vertical scaling',[1.0,2.0,3.0],key='schedule_vertical_scaling',on_change=save_schedule,args=('vertical_scaling',))
+    b.selectbox('Scheduler',[0.0,1.0],format_func=lambda v:'Default' if v==0 else 'Custom',key='schedule_scheduler',on_change=save_schedule,args=('scheduler',))
+    st.checkbox('Reserved allocation assigned',key='schedule_has_alloc',on_change=save_schedule,args=('has_alloc',))
+    st.slider('Machine ID bin',0,99,key='schedule_machine_bin',on_change=save_schedule,args=('machine_bin',))
+    st.download_button('Download workload configuration',json.dumps(scheduling,indent=2),'cloudify-workload.json','application/json')
+    st.caption('Configuration is retained within this browser session. It does not dispatch jobs.')
+else:
+    mode = st.radio('Reading source',['Manual readings','Hardware sequence'],horizontal=True,key='reading_source')
+    left,right = st.columns([1.2,1],gap='large')
+    results = None
+    source_inputs = None
+    fingerprint = None
+    started = time.perf_counter()
+    with left:
+        if mode == 'Manual readings':
+            st.subheader('Hardware readings')
+            st.caption('Every slider or number change recalculates automatically. CPU and memory use normalised trace units (0–1), not cores or GB.')
+            for key in FIELDS:
+                st.session_state['input_' + key] = saved[key]
+            st.slider('Cycles per instruction (CPI)',0.0,10.0,step=.01,key='input_cycles_per_instruction',on_change=remember,args=('cycles_per_instruction',))
+            st.slider('Memory accesses per instruction',0.0,.1,step=.0001,format='%.4f',key='input_memory_accesses_per_instruction',on_change=remember,args=('memory_accesses_per_instruction',))
+            st.markdown('**CPU measurements**')
+            a,b = st.columns(2)
+            for index,key in enumerate(['average_cpu','maximum_cpu','sample_cpu','requested_cpu']):
+                label,maximum,step = FIELDS[key]
+                (a if index%2==0 else b).number_input(label,min_value=0.0,max_value=maximum,step=step,format='%.6f',key='input_' + key,on_change=remember,args=(key,))
+            st.markdown('**Memory measurements**')
+            a,b = st.columns(2)
+            for index,key in enumerate(['average_memory','maximum_memory','requested_memory','assigned_memory','page_cache_memory']):
+                label,maximum,step = FIELDS[key]
+                (a if index%2==0 else b).number_input(label,min_value=0.0,max_value=maximum,step=step,format='%.6f',key='input_' + key,on_change=remember,args=(key,))
+            values = dict(saved)
+            values['cpu_utilisation'] = values['average_cpu']/(values['requested_cpu']+1e-10)
+            values['memory_utilisation'] = values['average_memory']/(values['requested_memory']+1e-10)
+            st.caption(f"Derived CPU utilisation: {values['cpu_utilisation']:.3f} · Memory utilisation: {values['memory_utilisation']:.3f}")
+            invalid = values['average_cpu'] > values['maximum_cpu'] or values['average_memory'] > values['maximum_memory']
+            invalid = invalid or (values['requested_cpu']==0 and values['average_cpu']>0) or (values['requested_memory']==0 and values['average_memory']>0)
+            if invalid:
+                st.error('Enter consistent readings: peak must be at least average, and positive usage requires a nonzero request. Results are withheld until corrected.')
+            else:
+                try:
+                    results = engine.predict(values)
+                    source_inputs = values
+                    fingerprint = 'manual:' + json.dumps(values,sort_keys=True)
+                except Exception as error:
+                    st.error(f'Unable to evaluate readings: {error}')
+            st.button('Reset to training medians',on_click=reset_readings)
         else:
-            st.metric("Anomaly score",f"{selected['Score']:.4f}")
-            st.caption(f"Flagged above saved threshold {selected['Threshold']:.4f}. Anomaly scores are not failure probabilities.")
-        st.caption(f"{sum(r['Outcome'] == 'FLAGGED' for r in results)} of {len(results)} models flag this observation.")
-        frame = pd.DataFrame(results)
-        frame["Failure probability"] = frame["Failure probability"].map(lambda p: f"{p:.1%}" if pd.notna(p) else "Not available")
-        st.dataframe(frame,hide_index=True,use_container_width=True)
-        st.download_button("Download evaluation",json.dumps({"evaluated_at":st.session_state["evaluated_at"],"inputs":st.session_state["evaluated_inputs"],"results":results},indent=2),"cloudify-evaluation.json","application/json")
-    st.caption("Manual inputs use training medians for unexposed resource and usage fields. Sequence inputs use the parent SMD pipeline. No live cloud telemetry is connected.")
+            st.subheader('Consecutive hardware observations')
+            st.caption('All three models evaluate the same final observation. LSTM uses the final 30 rows. A new upload or endpoint change evaluates immediately.')
+            sample = ROOT / 'examples/hardware-sequence.csv'
+            st.download_button('Download example CSV',sample.read_bytes(),'hardware-sequence.csv','text/csv')
+            uploaded = st.file_uploader('Hardware sequence CSV',type=['csv'])
+            use_example = st.checkbox('Use bundled example',value=True)
+            content = uploaded.getvalue() if uploaded is not None else (sample.read_bytes() if use_example else None)
+            if content is not None:
+                try:
+                    from io import BytesIO
+                    frame = pd.read_csv(BytesIO(content))
+                    sequence_engine = load_predictor('smd')
+                    sequence_engine.validate_sequence(frame)
+                    endpoint = st.slider('Observation to evaluate',30,len(frame),len(frame),key='sequence_endpoint') if len(frame)>30 else 30
+                    fingerprint = 'sequence:' + hashlib.sha256(content).hexdigest() + ':' + str(endpoint)
+                    if st.session_state.get('sequence_fingerprint') != fingerprint:
+                        with st.spinner('Evaluating all three models…'):
+                            evaluated = sequence_engine.predict_sequence(frame.iloc[:endpoint])
+                        st.session_state['sequence_result'] = evaluated
+                        st.session_state['sequence_fingerprint'] = fingerprint
+                    results = st.session_state['sequence_result']
+                    source_inputs = {'source_sha256':hashlib.sha256(content).hexdigest(),'observations':endpoint,'latest_reading':frame.iloc[endpoint-1].to_dict()}
+                    st.caption(f'Endpoint {endpoint} / {len(frame)} · uploaded sequence' if uploaded else f'Endpoint {endpoint} / {len(frame)} · recorded example')
+                except Exception as error:
+                    st.error(f'Cannot evaluate sequence: {error}')
+            else:
+                st.info('Upload a sequence or enable the bundled example.')
+    with right:
+        st.subheader('Current prediction')
+        if results is None:
+            st.info('Waiting for valid readings. Previous predictions are not shown for invalid inputs.')
+        else:
+            changed = fingerprint != st.session_state.get('last_fingerprint')
+            if changed:
+                evaluated_at = datetime.now(ZoneInfo('Africa/Lagos')).isoformat(timespec='seconds')
+                previous = st.session_state.get('evaluation',[])
+                st.session_state['previous_scores'] = {r['Model']:r['Score'] for r in previous} if st.session_state.get('last_mode')==mode else {}
+                st.session_state.update(evaluation=results,evaluated_at=evaluated_at,evaluated_inputs=source_inputs,last_fingerprint=fingerprint,last_mode=mode)
+                st.session_state['update_count'] = st.session_state.get('update_count',0)+1
+                record = {'Update':st.session_state['update_count'],'Time':evaluated_at,'Source':mode}
+                record.update({r['Model']:r['Score'] for r in results})
+                st.session_state['history'] = (st.session_state['history'] + [record])[-100:]
+                st.session_state['last_latency'] = (time.perf_counter()-started)*1000
+            st.caption('Automatically evaluated · ' + st.session_state['evaluated_at'])
+            selected = next((r for r in results if r['Model']==model),None)
+            if selected is None:
+                st.info('LSTM needs at least 30 consecutive hardware observations. Select Hardware sequence to evaluate it.')
+            else:
+                st.markdown(f'<div class="panel"><div class="eyebrow">{selected["Model"].upper()}</div><h2>{selected["Outcome"]}</h2></div>',unsafe_allow_html=True)
+                probability = selected['Failure probability']
+                previous_score = st.session_state.get('previous_scores',{}).get(model)
+                delta = None if previous_score is None else selected['Score']-previous_score
+                if probability is not None:
+                    st.metric('Model failure score',f'{probability:.2%}',None if delta is None else f'{delta*100:+.2f} percentage points',delta_color='inverse')
+                    st.progress(probability)
+                    st.caption('Random Forest class probability for this failure-proxy dataset; not a calibrated production forecast.')
+                else:
+                    st.metric('Anomaly score',f'{selected["Score"]:.6f}',None if delta is None else f'{delta:+.6f}',delta_color='inverse')
+                st.caption(f'Flagged above saved threshold {selected["Threshold"]:.6f}.')
+                if changed and delta is not None and abs(delta)<1e-12:
+                    st.caption('Inputs were recalculated. The model returned the same score; nearby readings can follow the same tree paths.')
+            table = pd.DataFrame(results).drop(columns=['Failure probability'])
+            st.dataframe(table,hide_index=True,width='stretch')
+            st.caption(f"{len(results)} models evaluated · {st.session_state.get('last_latency',0):.0f} ms · user-entered readings" if mode=='Manual readings' else f'{len(results)} models evaluated · sequence inference')
+            if mode=='Manual readings':
+                st.caption('Every trained hardware feature is supplied. CPU and memory utilisation are derived from the readings above.')
+            history = pd.DataFrame(st.session_state['history'])
+            history = history[history.Source==mode]
+            chart_columns = [r['Model'] for r in results if r['Model'] in history.columns]
+            if len(history)>1:
+                st.markdown('**Recent score history**')
+                st.caption('Raw model scores use different scales; compare each model with its own prior readings and threshold.')
+                for name in chart_columns:
+                    st.line_chart(history.set_index('Update')[[name]],height=120,color='#F5D547')
+            payload = {'source':mode,'evaluated_at':st.session_state['evaluated_at'],'inputs':source_inputs,'results':results}
+            st.download_button('Download evaluation',json.dumps(payload,indent=2),'cloudify-evaluation.json','application/json')
+            st.download_button('Download history',pd.DataFrame(st.session_state['history']).to_csv(index=False),'cloudify-history.csv','text/csv')
+            st.button('Clear history',on_click=lambda:st.session_state.update(history=[],last_fingerprint=None))
 st.divider()
-st.caption("CLOUDIFY  /  Scheduling & Hardware monitoring  ·  Powered by your trained cloud models")
+st.caption('CLOUDIFY / Scheduling & Hardware · Predictions update on submitted widget changes · No live provider connection')

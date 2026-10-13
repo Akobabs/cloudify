@@ -27,13 +27,14 @@ Dependencies and Streamlit theme are included. TensorFlow is loaded lazily when 
 ## How to use
 
 - **Scheduling:** configure task metadata; values persist while switching views.
-- **Hardware:** set CPI and memory accesses per instruction, then evaluate manual hardware with Random Forest and One-Class SVM.
-- Click **Try bundled hardware example** to immediately evaluate all three models without an upload. Download the example CSV or upload 30–1000 chronological rows with `metric_01` through `metric_38`.
+- **Hardware / Manual readings:** edit CPI, memory accesses per instruction, CPU measurements and memory measurements. Random Forest and One-Class SVM recalculate automatically on each submitted widget change. All 13 model features are supplied; utilisation ratios are derived automatically. Number edits submit when you press Enter or leave the field, and sliders submit when released.
+- Invalid combinations with average above peak or positive usage with a zero request withhold predictions until corrected. Results show the actual update timestamp, score change, model thresholds, evaluation time, and a session history of up to 100 changes. Model scores can legitimately remain identical for nearby readings; predictions are never randomly varied.
+- **Hardware / Hardware sequence:** the bundled example evaluates all three models automatically. Download the example CSV or upload 30–1000 chronological rows with `metric_01` through `metric_38`. Move the endpoint slider to automatically evaluate another observation.
 - Choose a primary model and download evaluation results as JSON.
 
 ## Model scope and provenance
 
-Artifacts come from `20260930T155937Z_research_improved`, seed 42. Manual inference uses the parent's Google Cluster preprocessing, Random Forest and genuine One-Class SVM. Unexposed fields use fitted training medians. Scheduling identifiers were excluded by the parent pipeline and do not influence these scores.
+Artifacts come from `20260930T155937Z_research_improved`, seed 42. Manual inference uses the parent's Google Cluster preprocessing, Random Forest and genuine One-Class SVM. Initial hardware values use training medians, then every feature is supplied from editable readings or derived utilisation ratios. Scheduling identifiers were excluded by the parent pipeline and do not influence these scores.
 
 Sequence inference uses the parent's SMD machine-3-1 preprocessing and all three frozen models. Causal rolling means and deltas match the original preprocessing. The LSTM uses the final 30-row window; tabular models score the same final endpoint. An uploaded sequence starts a new rolling context. Arbitrary production counters are not interchangeable with the SMD feature schema.
 

@@ -22,22 +22,41 @@ class DashboardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             engine.predict_sequence(sample.drop(columns="metric_01"))
 
-    def test_page_persistence_and_manual_evaluation(self):
+    def test_automatic_updates_and_persistence(self):
         app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120).run()
         self.assertFalse(app.exception)
-        app.slider(key="_priority").set_value(220).run()
-        app.radio[0].set_value("Hardware").run()
-        app.slider(key="_cycles_per_instruction").set_value(2.2).run()
-        app.radio[0].set_value("Scheduling").run()
-        self.assertEqual(app.slider(key="_priority").value, 220)
-        app.radio[0].set_value("Hardware").run()
-        self.assertEqual(app.slider(key="_cycles_per_instruction").value, 2.2)
-        next(b for b in app.button if b.label == "Evaluate manual hardware →").click().run()
+        app.radio(key="navigation").set_value("Scheduling").run()
+        app.slider(key="schedule_priority").set_value(220).run()
+        app.radio(key="navigation").set_value("Hardware").run()
         self.assertFalse(app.exception)
-        self.assertEqual(len(app.session_state["evaluation"]), 2)
-        next(b for b in app.button if b.label == "Try bundled hardware example").click().run()
+        first_score = app.session_state["evaluation"][0]["Score"]
+        self.assertEqual(len(app.session_state["history"]), 1)
+        app.slider(key="input_cycles_per_instruction").set_value(4.0).run()
+        self.assertFalse(app.exception)
+        second_score = app.session_state["evaluation"][0]["Score"]
+        self.assertNotEqual(first_score, second_score)
+        self.assertEqual(len(app.session_state["history"]), 2)
+        app.run()
+        self.assertEqual(len(app.session_state["history"]), 2)
+        app.radio(key="navigation").set_value("Scheduling").run()
+        self.assertEqual(app.slider(key="schedule_priority").value, 220)
+        app.radio(key="navigation").set_value("Hardware").run()
+        self.assertEqual(app.slider(key="input_cycles_per_instruction").value, 4.0)
+        app.number_input(key="input_average_cpu").set_value(.8).run()
+        self.assertTrue(any("consistent readings" in e.value for e in app.error))
+        self.assertEqual(len(app.dataframe), 0)
+        app.number_input(key="input_maximum_cpu").set_value(.9).run()
+        self.assertFalse(app.error)
+        self.assertFalse(app.exception)
+        app.radio(key="reading_source").set_value("Hardware sequence").run()
         self.assertFalse(app.exception)
         self.assertEqual(len(app.session_state["evaluation"]), 3)
+        fingerprint = app.session_state["last_fingerprint"]
+        app.slider(key="sequence_endpoint").set_value(40).run()
+        self.assertFalse(app.exception)
+        self.assertNotEqual(fingerprint, app.session_state["last_fingerprint"])
+        app.selectbox[0].set_value("LSTM Autoencoder").run()
+        self.assertFalse(app.exception)
 
 if __name__ == "__main__":
     unittest.main()
